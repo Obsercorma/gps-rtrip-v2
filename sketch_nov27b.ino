@@ -1,23 +1,20 @@
-// Version non bloquante optimisée pour GPS + SD + DHT11 + LEDs
-// ESP32 — Lecture GPS prioritaire — Aucun delay()
-// --- CE CODE EST UNE BASE PROPRE À ADAPTER À TON PROJET ---
-
 #include "TinyGPSPlus.h"
 #include <SPI.h>
 #include "SdFat.h"
 #include <DHT.h>
-//#include "transmitAPI.h"
+#include "ap_service.h"
 
-//#define DEBUG_MODE
+#define DEBUG_MODE
 #define TEMP_OFFSET 0.0
 #define TIME_INTERVAL 8000
 #define TIME_INTERVAL_END_BTN 2000
 #define TIME_INTERVAL_REACH_BTN 2000
 #define TIME_INTERVAL_STEP_BTN 1000
 #define TIME_FLUSH_INTERVAL 5000
+#define COUNT_TO_TRIGGER_WEB 2
 
 // ------------------- PINS ----------------------
-#define SD_CS   5
+#define SD_CS 5
 #define SD_SCK 18
 #define SD_MISO 19
 #define SD_MOSI 23
@@ -28,9 +25,9 @@
 #define DHT_PIN 15
 #define DHT_TYPE DHT11
 
-#define RED_PIN   13 // G13
+#define RED_PIN 13   // G13
 #define GREEN_PIN 12 // G12
-#define BLUE_PIN  14 // G14
+#define BLUE_PIN 14  // G14
 
 #define BTN_STEP 27
 #define BTN_DEST 26
@@ -41,6 +38,7 @@ TinyGPSPlus gps;
 SdFat sd;
 File fileWrite;
 DHT dht(DHT_PIN, DHT_TYPE);
+WifiConfig wifiCfg;
 
 // ------------------- TIMERS ----------------------
 unsigned long tGPSPrint = 0;
@@ -52,6 +50,7 @@ bool ledState = false;
 bool blinkActive = false;
 bool endBtnTriggered = false;
 uint8_t blinkPin = BLUE_PIN;
+uint8_t posWebTrigger = 0;
 uint8_t blinkTarget = 0;
 uint8_t blinkCount = 0;
 uint16_t blinkInterval = 300;
@@ -64,13 +63,30 @@ bool blinkLong = false;
 bool hasPaused = false;
 bool hasFailed = false;
 bool doneProcess = false;
+bool webTriggered = false;
+bool wifiWokeUp = false;
 unsigned long debounceStep = 0;
 unsigned long debounceReach = 0;
 unsigned long blinkStart = 0;
 
-
 //----------------------------------------------------
-void startBlink(uint8_t pin, uint8_t count, uint16_t speed, bool longBlink=false){
+
+void fileTripOpen(File *f){
+  (*f) = sd.open("trip.csv", FILE_WRITE);
+
+    if (!(*f))
+  {
+  #ifdef DEBUG_MODE
+      Serial.println("File open failed!");
+  #endif
+    if (!hasFailed)
+      setStatus_RED_ERROR();
+    hasFailed = true;
+  }
+}
+
+void startBlink(uint8_t pin, uint8_t count, uint16_t speed, bool longBlink = false)
+{
   blinkPin = pin;
   blinkTarget = count;
   blinkInterval = speed;
@@ -88,10 +104,13 @@ void blinkAlertNonBlocking(uint8_t pin, uint16_t interval)
   blinkInterval = interval;
 }
 
-bool readButton(uint8_t pin, bool &state, unsigned long &debounce){
+bool readButton(uint8_t pin, bool &state, unsigned long &debounce)
+{
   unsigned long now = millis();
-  if(digitalRead(pin) == LOW){
-    if(now - debounce > 200){
+  if (digitalRead(pin) == LOW)
+  {
+    if (now - debounce > 200)
+    {
       debounce = now;
       state = true;
       return true;
@@ -99,37 +118,45 @@ bool readButton(uint8_t pin, bool &state, unsigned long &debounce){
   }
   return false;
 }
-void setStatus_RED_ERROR(){ // Red blink
+void setStatus_RED_ERROR()
+{ // Red blink
   startBlink(RED_PIN, 6, 200);
 }
 
-void setStatus_LED_SOLID(uint16_t pin){ // GPS no data
+void setStatus_LED_SOLID(uint16_t pin)
+{ // GPS no data
   blinkActive = false;
   digitalWrite(pin, HIGH);
 }
 
-void setStatus_GREEN_OK(){ // Permanent green
+void setStatus_GREEN_OK()
+{ // Permanent green
   blinkActive = false;
   digitalWrite(GREEN_PIN, HIGH);
 }
 
-void setStatus_GREEN_END(){ // Green blink
+void setStatus_GREEN_END()
+{ // Green blink
   startBlink(GREEN_PIN, 3, 300);
 }
 
-void status_BLUE_invalidGPS(){ // 2× blink
+void status_BLUE_invalidGPS()
+{ // 2× blink
   startBlink(BLUE_PIN, 2, 200);
 }
 
-void status_BLUE_step(){ // 4× blink
+void status_BLUE_step()
+{ // 4× blink
   startBlink(BLUE_PIN, 4, 200);
 }
 
-void status_BLUE_reach(){ // 1× long blink
+void status_BLUE_reach()
+{ // 1× long blink
   startBlink(BLUE_PIN, 4, 1000);
 }
 
-void status_start_and_stop(){
+void status_start_and_stop()
+{
   digitalWrite(GREEN_PIN, LOW);
   setStatus_LED_SOLID(RED_PIN);
   delay(500);
@@ -143,7 +170,8 @@ void status_start_and_stop(){
 }
 
 //----------------------------------------------------
-void setup(){
+void setup()
+{
   Serial.begin(115200);
 
   pinMode(RED_PIN, OUTPUT);
@@ -156,104 +184,141 @@ void setup(){
   dht.begin();
 
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  if(!sd.begin(SD_CS, SD_SCK_MHZ(10))){
-    #ifdef DEBUG_MODE
+  if (!sd.begin(SD_CS, SD_SCK_MHZ(10)))
+  {
+#ifdef DEBUG_MODE
     Serial.println("SD init failed !");
-    #endif
+#endif
     setStatus_RED_ERROR();
     hasFailed = true;
   }
 
-  fileWrite = sd.open("trip.csv", FILE_WRITE);
-  if(!fileWrite){ 
-    #ifdef DEBUG_MODE
-    Serial.println("File open failed!");
-    #endif
-    if(!hasFailed) setStatus_RED_ERROR();
-    hasFailed = true;
-  }
+  fileTripOpen(&fileWrite);
 
   gpsDevice.begin(9600, SERIAL_8N1, RX_GPS_PIN, TX_GPS_PIN);
-  if(!hasFailed){
-    #ifdef DEBUG_MODE
+  if (!hasFailed)
+  {
+#ifdef DEBUG_MODE
     Serial.println("GPS Started");
-    #endif
+#endif
     status_start_and_stop();
   }
 }
 
 //----------------------------------------------------
-void loop(){
-  if(doneProcess) {
+void loop()
+{
+  if (doneProcess)
+  {
     delay(500);
     return;
   }
-  // 1) PRIORITÉ : LECTURE GPS NON STOP
   bool vr = digitalRead(BTN_STEP);
   bool ve = digitalRead(BTN_DEST);
   delay(25);
-  if(endBtnTriggered){
+  if (endBtnTriggered)
+  {
     doneProcess = true;
-    #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
     Serial.println("Closing all interfaces..");
-    #endif
+#endif
     status_start_and_stop();
   }
-  if(ve == LOW) {
+  if (ve == LOW)
+  {
     timeCBtn = millis();
-    do{
+    do
+    {
       ve = digitalRead(BTN_DEST);
       delay(10);
-    }
-    while(ve == LOW);
-    ct = (millis()-timeCBtn);
-    if(ct >= TIME_INTERVAL_END_BTN){
+    } while (ve == LOW);
+    ct = (millis() - timeCBtn);
+    if (ct >= TIME_INTERVAL_END_BTN)
+    {
       endBtnTriggered = true;
-      fileWrite.println("DEST_R");
+      fileWrite.println("RT_END");
       setStatus_GREEN_END();
+    }else{
+      posWebTrigger++;
+      if(posWebTrigger == COUNT_TO_TRIGGER_WEB){
+        posWebTrigger = 0;
+        #ifdef DEBUG_MODE
+        Serial.println("Enabling the web & ap service");
+        #endif
+        webTriggered = !webTriggered;
+        if(webTriggered){
+          fileWrite.close();
+          wifiCfg = loadWifiConfig(&sd);
+          if(wifiCfg.success){
+            setupWifi(&wifiCfg);
+            #ifdef DEBUG_MODE
+            Serial.printf("AP Mode Triggered; AP_SSID: %s - IP: %s\n", wifiCfg.ssid, wifiCfg.ip);
+            #endif
+            setStatus_GREEN_OK();
+          }
+        }else{
+          fileTripOpen(&fileWrite);
+          if(wifiCfg.success) stopWifi();
+          #ifdef DEBUG_MODE
+          if(fileWrite) Serial.println("AP Mode Disabled. Going back to the recording mode.");
+          #endif
+        }
+      }
     }
-  }else if(vr == LOW){
+  }
+  else if (vr == LOW)
+  {
     timeCBtn = millis();
-    do{
+    do
+    {
       vr = digitalRead(BTN_STEP);
       delay(10);
-    }while(vr == LOW);
-    ct = (millis()-timeCBtn);
+    } while (vr == LOW);
+    ct = (millis() - timeCBtn);
     digitalWrite(GREEN_PIN, LOW);
-    if(ct >= TIME_INTERVAL_REACH_BTN){
+    if (ct >= TIME_INTERVAL_REACH_BTN)
+    {
       fileWrite.println("DEST_R");
-      #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
       Serial.println("DEST_R");
-      #endif
+#endif
       status_BLUE_reach();
-    }else{
+    }
+    else
+    {
       hasPaused = !hasPaused;
-      #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
       Serial.println(hasPaused ? "RT_PAUSED" : "RT_RESUMED");
-      #endif
+#endif
       fileWrite.println(hasPaused ? "RT_P" : "RT_R");
       status_BLUE_step();
       delay(200);
     }
   }
-  while(gpsDevice.available()){
+  if(webTriggered){
+    return;
+  }
+  while (gpsDevice.available())
+  {
     gps.encode(gpsDevice.read());
   }
 
   unsigned long now = millis();
 
-  // 2) BLINK LED NON BLOQUANT
-  if(blinkActive && now - tBlink >= blinkInterval && blinkCount < blinkTarget){
+  if (blinkActive && now - tBlink >= blinkInterval && blinkCount < blinkTarget)
+  {
     tBlink = now;
     ledState = !ledState;
     blinkCount++;
     digitalWrite(blinkPin, ledState);
   }
 
-  if(hasFailed){
+  if (hasFailed)
+  {
     setStatus_LED_SOLID(RED_PIN);
   }
-  else if(now - tSensorRead >= TIME_INTERVAL){
+  else if (now - tSensorRead >= TIME_INTERVAL)
+  {
     tSensorRead = now;
 
     float h = dht.readHumidity();
@@ -263,31 +328,33 @@ void loop(){
     bool dateOK = gps.date.isValid() && gps.date.isUpdated();
     bool timeOK = gps.time.isValid() && gps.time.isUpdated();
 
-    if (!coordsOK || !dateOK || !timeOK){
+    if (!coordsOK || !dateOK || !timeOK)
+    {
       digitalWrite(GREEN_PIN, LOW);
       status_BLUE_reach();
-    } else {
+    }
+    else
+    {
       digitalWrite(GREEN_PIN, HIGH);
       blinkActive = false;
       digitalWrite(BLUE_PIN, LOW);
     }
 
-    // Écriture SD (non bloquante sauf print)
     String data = coordsOK ? (String(gps.location.lat(), 8) + ";" + String(gps.location.lng(), 8) + ";" + String(gps.altitude.meters())) : "LT_I;LG_I;AT_I";
     data += ";" + (dateOK ? (String(gps.date.day()) + "/" + String(gps.date.month()) + "/" + String(gps.date.year()) + "#V") : "0/0/2000#NV");
     data += ";" + (timeOK ? (String(gps.time.hour()) + ":" + String(gps.time.minute()) + "#V") : "0:0#NV");
-    
-    data += ";" + (!isnan(h) && !isnan(t) ? (String)dht.computeHeatIndex((t-TEMP_OFFSET), h, false) + "#V" : "0.0#NV");
+
+    data += ";" + (!isnan(h) && !isnan(t) ? (String)dht.computeHeatIndex((t - TEMP_OFFSET), h, false) + "#V" : "0.0#NV");
 
     fileWrite.println(data);
 
-    #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
     Serial.println(data);
-    #endif
+#endif
   }
 
-  // 4) FLUSH SD TOUTES LES 5 SECONDES
-  if(now - tSDflush >= TIME_FLUSH_INTERVAL && !hasFailed){
+  if (now - tSDflush >= TIME_FLUSH_INTERVAL && !hasFailed)
+  {
     tSDflush = now;
     fileWrite.flush();
   }
