@@ -1,12 +1,12 @@
 #include "ap_service.h"
 
-extern bool wifiIsRunning = false;
+bool wifiIsRunning = false;
 
 WifiConfig loadWifiConfig(SdFat *sdWifi)
 {
     WifiConfig cfg;
     
-    File file = (*sdWifi).open("config/wifi.env", FILE_READ);
+    FsFile file = sdWifi->open("config/wifi.env", O_RDONLY);
     if (!file)
     {
         Serial.println("wifi.env introuvable, valeurs par défaut utilisées");
@@ -48,25 +48,25 @@ WifiConfig loadWifiConfig(SdFat *sdWifi)
     return cfg;
 }
 
-void setupWifi(WifiConfig *cfg){
+bool setupWifi(WifiConfig *cfg){
   if(!(*cfg).success){
     #ifdef DEBUG_MODE
     Serial.println("Cannot setup the wifi AP! AP Configuration is may not initiated rightly");
     #endif
-    wifiIsRunning = false;
- false;
+    return false;
   }
   WiFi.mode(WIFI_AP);
   WiFi.softAP((*cfg).ssid, (*cfg).password);
-  wifiIsRunning = true;
 
   (*cfg).ip = WiFi.softAPIP().toString();
+  
+  return (wifiIsRunning = true);
 }
 
-void stopWifi(){
-  if(!wifiIsRunning) return;
-
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_OFF);
-  wifiIsRunning = false;
+bool stopWifi(){
+  if(wifiIsRunning){
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+  return (wifiIsRunning = false);
 }

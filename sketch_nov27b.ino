@@ -1,8 +1,10 @@
 #include "TinyGPSPlus.h"
+#include <Arduino.h>
 #include <SPI.h>
-#include "SdFat.h"
+#include <SdFat.h>
 #include <DHT.h>
 #include "ap_service.h"
+#include "http_service.h"
 
 #define DEBUG_MODE
 #define TEMP_OFFSET 0.0
@@ -36,7 +38,7 @@
 HardwareSerial gpsDevice(2);
 TinyGPSPlus gps;
 SdFat sd;
-File fileWrite;
+FsFile fileWrite;
 DHT dht(DHT_PIN, DHT_TYPE);
 WifiConfig wifiCfg;
 
@@ -63,24 +65,32 @@ bool blinkLong = false;
 bool hasPaused = false;
 bool hasFailed = false;
 bool doneProcess = false;
-bool webTriggered = false;
-bool wifiWokeUp = false;
+bool apRunning = false;
+bool fileTripAlreadyRenamed = false;
 unsigned long debounceStep = 0;
 unsigned long debounceReach = 0;
 unsigned long blinkStart = 0;
+String fileTripName = "trips/trip.csv";
 
 //----------------------------------------------------
 
-void fileTripOpen(File *f){
-  (*f) = sd.open("trip.csv", FILE_WRITE);
+void fileTripOpen(FsFile *f){
+  FsFile checkDir = sd.open("trips", O_RDONLY);
+  if(!checkDir.isDirectory())
+  {
+    #ifdef DEBUG_MODE
+    Serial.println("Folder trip missing. Creating a new one...");
+    #endif
+    sd.mkdir("trips");
+    checkDir.close();
+  }
+  (*f) = sd.open(fileTripName, O_WRITE | O_CREAT | O_APPEND);
 
-    if (!(*f))
+    if (!(*f) || !f)
   {
   #ifdef DEBUG_MODE
       Serial.println("File open failed!");
   #endif
-    if (!hasFailed)
-      setStatus_RED_ERROR();
     hasFailed = true;
   }
 }
@@ -169,6 +179,20 @@ void status_start_and_stop()
   digitalWrite(BLUE_PIN, LOW);
 }
 
+void startWiFiAndWebMode(){
+  wifiCfg = loadWifiConfig(&sd);
+  if(wifiCfg.success){
+    apRunning = setupWifi(&wifiCfg);
+    http_start(sd);
+    #ifdef DEBUG_MODE
+    Serial.printf("AP Mode Triggered; AP_SSID: %s - IP: %s\n", wifiCfg.ssid, wifiCfg.ip);
+    #endif
+    digitalWrite(BLUE_PIN, LOW);
+    digitalWrite(RED_PIN, LOW);
+    setStatus_GREEN_OK();
+  }
+}
+
 //----------------------------------------------------
 void setup()
 {
@@ -208,8 +232,11 @@ void setup()
 //----------------------------------------------------
 void loop()
 {
+  http_loop();
+  
   if (doneProcess)
   {
+    if(!apRunning) startWiFiAndWebMode();
     delay(500);
     return;
   }
@@ -245,20 +272,16 @@ void loop()
         #ifdef DEBUG_MODE
         Serial.println("Enabling the web & ap service");
         #endif
-        webTriggered = !webTriggered;
-        if(webTriggered){
+        apRunning = !apRunning;
+        if(apRunning){
           fileWrite.close();
-          wifiCfg = loadWifiConfig(&sd);
-          if(wifiCfg.success){
-            setupWifi(&wifiCfg);
-            #ifdef DEBUG_MODE
-            Serial.printf("AP Mode Triggered; AP_SSID: %s - IP: %s\n", wifiCfg.ssid, wifiCfg.ip);
-            #endif
-            setStatus_GREEN_OK();
-          }
+          startWiFiAndWebMode();
         }else{
           fileTripOpen(&fileWrite);
-          if(wifiCfg.success) stopWifi();
+          if(wifiCfg.success) {
+            http_stop();
+            stopWifi();
+          }
           #ifdef DEBUG_MODE
           if(fileWrite) Serial.println("AP Mode Disabled. Going back to the recording mode.");
           #endif
@@ -295,9 +318,11 @@ void loop()
       delay(200);
     }
   }
-  if(webTriggered){
+  if(apRunning) {
+    delay(5);
     return;
   }
+
   while (gpsDevice.available())
   {
     gps.encode(gpsDevice.read());
@@ -327,6 +352,24 @@ void loop()
     bool coordsOK = gps.location.isValid() && gps.location.isUpdated();
     bool dateOK = gps.date.isValid() && gps.date.isUpdated();
     bool timeOK = gps.time.isValid() && gps.time.isUpdated();
+
+    if(!fileTripAlreadyRenamed && dateOK){
+      fileTripAlreadyRenamed = true;
+      char name[64];
+      snprintf(
+        name,
+        sizeof(name),
+        "trips/trip_%04d%02d%02d.csv",
+        gps.date.year(), gps.date.month(), gps.date.day()
+      );
+      fileTripName = "";
+      fileTripName.concat(name);
+      fileWrite.close();
+      fileTripOpen(&fileWrite);
+      #ifdef DEBUG_MODE
+      Serial.printf("Writing on %s\n", name);
+      #endif
+    }
 
     if (!coordsOK || !dateOK || !timeOK)
     {

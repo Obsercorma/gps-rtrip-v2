@@ -1,8 +1,10 @@
 #ifndef WIFI_H
 #define WIFI_H
 
+#include <Arduino.h>
+#include <WebServer.h>
+#include <SdFat.h>
 #include <WiFi.h>
-#include "SdFat.h"
 
 
 struct WifiConfig
@@ -17,8 +19,8 @@ struct WifiConfig
 
 WifiConfig loadWifiConfig(SdFat *sdWifi);
 
-void setupWifi(WifiConfig *cfg);
+bool setupWifi(WifiConfig *cfg);
 
-void stopWifi();
+bool stopWifi();
 
 #endif
