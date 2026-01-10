@@ -6,7 +6,7 @@
 #include "ap_service.h"
 #include "http_service.h"
 
-#define DEBUG_MODE
+//#define DEBUG_MODE
 #define TEMP_OFFSET 0.0
 #define TIME_INTERVAL 8000
 #define TIME_INTERVAL_END_BTN 2000
@@ -31,8 +31,8 @@
 #define GREEN_PIN 12 // G12
 #define BLUE_PIN 14  // G14
 
-#define BTN_STEP 27
-#define BTN_DEST 26
+#define BTN_STEP 26
+#define BTN_DEST 27
 
 // ------------------- OBJETS ----------------------
 HardwareSerial gpsDevice(2);
@@ -167,7 +167,6 @@ void status_BLUE_reach()
 
 void status_start_and_stop()
 {
-  digitalWrite(GREEN_PIN, LOW);
   setStatus_LED_SOLID(RED_PIN);
   delay(500);
   digitalWrite(RED_PIN, LOW);
@@ -350,7 +349,7 @@ void loop()
     float t = dht.readTemperature();
 
     bool coordsOK = gps.location.isValid() && gps.location.isUpdated();
-    bool dateOK = gps.date.isValid() && gps.date.isUpdated();
+    bool dateOK = gps.date.isValid() && gps.date.isUpdated() && gps.date.month() != 0;
     bool timeOK = gps.time.isValid() && gps.time.isUpdated();
 
     if(!fileTripAlreadyRenamed && dateOK){
