@@ -24,6 +24,8 @@ Le projet s’inscrit dans une démarche d’apprentissage et de mise en pratiqu
 
 ![Graphique](GPSRTRIPV2.drawio.webp)
 
+---
+
 ## Outils utilisés
 
 - Visual Studio Code  
