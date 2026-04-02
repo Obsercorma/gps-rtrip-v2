@@ -20,6 +20,10 @@ Le projet s’inscrit dans une démarche d’apprentissage et de mise en pratiqu
 
 ---
 
+## Présentation graphique
+
+![Graphique](https://github.com/Obsercorma/gps-rtrip-v2/blob/c717a01a41455e6190ea3eb2cb937bf60116fc03/GPSRTRIPV2.drawio.webp)
+
 ## Outils utilisés
 
 - Visual Studio Code  
